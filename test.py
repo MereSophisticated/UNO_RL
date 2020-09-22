@@ -1,21 +1,20 @@
 import numpy as np
+from card import Card
 from player import Player
 from deck import Deck
 from collections import Counter
 from utils import COLORS
+from keras.models import load_model
+import time
 
 
-class UnoEnvironment:
-    DRAW_CARD_REWARD = -5
-    CARD_PLAYED_REWARD = 2
-    WIN_REWARD = 50
+class UnoTest:
     TRAIT_TO_INDEX = {'0': 0, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7,
                       '8': 8, '9': 9, 'skip': 10, 'reverse': 11, 'draw_2': 12,
                       'wild': 13, 'draw_4': 14}
     ACTION_COUNT = 55
-    STATE_SIZE = 6 * 5 * 15
 
-    def __init__(self, number_of_players=2):
+    def __init__(self, model_path, number_of_players=2):
         self.deck = Deck()
         self.number_of_players = number_of_players
         self.players = [Player(self.deck.draw_cards(7)) for player in range(self.number_of_players)]
@@ -24,21 +23,10 @@ class UnoEnvironment:
         self.top = self.played_cards[-1]
         self.turn_direction = 1
         self.current_player = 0
-        self.reward = 0
-        self.turn = 0
         self.done = False
-
-    def reset(self):
-        self.deck = Deck()
-        self.players = [Player(self.deck.draw_cards(7)) for player in range(self.number_of_players)]
-        self.played_card = None
-        self.played_cards = self.reveal_top_card()
-        self.top = self.played_cards[len(self.played_cards) - 1]
-        self.turn_direction = 1
-        self.current_player = 0
-        self.reward = 0
-        self.turn = 0
-        self.done = False
+        self.model = load_model(model_path)
+        #self.pretty_print_state()
+        #self.random_agent_move()
 
     def get_state(self):
         state = np.zeros((6, 5, 15), dtype=int)
@@ -50,7 +38,7 @@ class UnoEnvironment:
             self.players[(self.current_player + self.turn_direction) % self.number_of_players].get_hand_size())
         state[5:] = encoded_opp
 
-        return state.flatten()
+        return state
 
     def state_size(self):
         return len(self.get_state())
@@ -65,14 +53,6 @@ class UnoEnvironment:
             encoded_hand[count - 1][color][trait] = 1
         return encoded_hand
 
-    ''' 
-        Encodes opponents hand size
-        0,0,0 = 1 --> 1 card
-        0,0,1 = 1 --> 2 cards
-        ...
-        0,0,14 = 1 --> 15 cards
-        0,1,0 = 1 --> 16 cards
-    '''
     def encode_opp_hand(self, hand_size):
         encoded_hand_size = np.zeros((1, 5, 15), dtype=int)
         for count in range(hand_size):
@@ -99,24 +79,21 @@ class UnoEnvironment:
         return revealed_cards
 
     def step(self, action):
-        self.turn += 1
         player = self.players[self.current_player]
         skip = False
         if action != 54:
             index = [card.action_number for card in player.cards].index(action)
             self.played_card = player.cards[index]
         else:
-            # Action is draw
             self.played_card = None
 
         if not self.played_card:
             self.draw_cards(player, 1)
-            self.reward = self.DRAW_CARD_REWARD
         else:
             if self.played_card.trait == "skip":
                 skip = True  # self.skip()
             elif self.played_card.trait == "reverse":
-                self.reverse_turn()
+                skip = True  # self.skip()
             elif self.played_card.trait == "draw_2":
                 self.draw_cards(self.players[(self.current_player + self.turn_direction) % self.number_of_players], 2)
                 skip = True  # self.skip()
@@ -126,16 +103,20 @@ class UnoEnvironment:
                 self.draw_cards(self.players[(self.current_player + self.turn_direction) % self.number_of_players], 4)
                 self.played_card.color = np.random.randint(COLORS)
                 skip = True  # self.skip()
-            self.reward = self.CARD_PLAYED_REWARD
             self.played_cards.append(player.play_card(index))
 
-        if len(player.cards) == 0 or self.number_of_players == 1:
-            self.reward += self.WIN_REWARD
+        if len(player.cards) == 0:
             self.done = True
-
-        if skip:
-            self.skip()
-        return self.get_state(), self.reward, self.done, self.turn
+            if self.current_player == 0:
+                # print("Random agent wins!")
+                return 0
+            else:
+                # print("Tested agent wins!")
+                return 1
+        else:
+            if skip:
+                self.skip()
+                self.next_turn()
 
     def get_legal_actions(self):
         player = self.players[self.current_player]
@@ -162,7 +143,7 @@ class UnoEnvironment:
                 if card.color == self.top.color or card.trait == self.top.trait:
                     legal_actions.append(card.action_number)
 
-        # Only if there are no other legal actions except draw, draw_4 is legal
+        # Only if there are no other legal actions, draw 4 can be played
         if not legal_actions and draw_4_actions:
             legal_actions.append(draw_4_actions)
         legal_actions.append(54)
@@ -170,6 +151,35 @@ class UnoEnvironment:
 
     def skip(self):
         self.current_player = (self.current_player + self.turn_direction) % self.number_of_players
+
+    def next_turn(self):
+        #self.pretty_print_state()
+        #time.sleep(1)
+        self.current_player = (self.current_player + self.turn_direction) % self.number_of_players
+
+        if self.current_player == 0:
+            self.random_agent_move()
+        else:
+            self.agent_move()
+
+    def agent_move(self):
+        state = self.get_state().flatten()
+        values = self.model.predict(np.array(state).reshape(-1, *state.shape))[0]
+        legal_actions = self.get_legal_actions()
+        max_index = 0
+        for index, action in enumerate(legal_actions):
+            if values[action] > values[max_index]:
+                max_index = index
+        action = legal_actions[max_index]
+        return self.step(action)
+
+    def random_agent_move(self):
+        legal_actions = self.get_legal_actions()
+        if len(legal_actions) > 1:
+            index = legal_actions.index(54)
+            del legal_actions[index]
+            #print(legal_actions)
+        return self.step(np.random.choice(legal_actions, 1))
 
     def reverse_turn(self):
         self.turn_direction *= -1
@@ -188,12 +198,9 @@ class UnoEnvironment:
     #             elif card.type == "wild":
     #                 points_n += 50
     #         points.append(points_n)
-    #         print("Player" + str(i) + ": ")
-    #         print(-points)
     #     return points
 
     def draw_cards(self, player, number_of_cards_to_draw):
-        # Handle empty deck
         if len(self.deck.deck) < number_of_cards_to_draw:
             self.shuffle_played_cards_into_deck()
         cards_to_draw = self.deck.draw_cards(number_of_cards_to_draw)
@@ -205,4 +212,21 @@ class UnoEnvironment:
         self.played_cards = temp
         self.deck.shuffle_deck()
 
+    def pretty_print_state(self):
+        print("-------------------------------------------------------------------------------------------------------")
+        print("Revealed card:")
+        Card.pretty_print_cards(self.played_cards[len(self.played_cards) - 1:], False)
+
+        for player in range(self.number_of_players):
+            if player == 0:
+                if player == self.current_player:
+                    print("ACTIVE-", end='')
+                print("Random agent:")
+                self.players[player].print_hand()
+            else:
+                if player == self.current_player:
+                    print("ACTIVE-", end='')
+                print("Tested agent:")
+                self.players[player].print_hand()
+        print("-------------------------------------------------------------------------------------------------------")
 

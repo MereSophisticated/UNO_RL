@@ -101,6 +101,7 @@ class UnoGame:
 
     def step(self, action):
         player = self.players[self.current_player]
+        skip = False
         if action != 54:
             index = [card.action_number for card in player.cards].index(action)
             self.played_card = player.cards[index]
@@ -111,18 +112,18 @@ class UnoGame:
             self.draw_cards(player, 1)
         else:
             if self.played_card.trait == "skip":
-                self.skip()
+                skip = True  # self.skip()
             elif self.played_card.trait == "reverse":
                 self.reverse_turn()
             elif self.played_card.trait == "draw_2":
                 self.draw_cards(self.players[(self.current_player + self.turn_direction) % self.number_of_players], 2)
-                self.skip()
+                skip = True  # self.skip()
             elif self.played_card.trait == "wild":
                 self.played_card.color = np.random.randint(COLORS)
             elif self.played_card.trait == "draw_4":
                 self.draw_cards(self.players[(self.current_player + self.turn_direction) % self.number_of_players], 4)
                 self.played_card.color = np.random.randint(COLORS)
-                self.skip()
+                skip = True  # self.skip()
             self.played_cards.append(player.play_card(index))
 
         if len(player.cards) == 0:
@@ -132,6 +133,8 @@ class UnoGame:
             else:
                 print("AI wins!")
         else:
+            if skip:
+                self.skip()
             self.next_turn()
 
     def get_legal_actions(self):
